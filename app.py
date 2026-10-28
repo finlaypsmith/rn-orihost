@@ -145,122 +145,88 @@ def send_telegram_notification(status, old_due, new_due, current_ip="未知"):
         return False
 
 
-def human_mouse_click(page, locator, timeout=8000):
-    """真鼠标轨迹点击：先随意晃两下（造移动历史），再分两段逼近目标，
-    带抖动和停顿，最后落点。Turnstile 看鼠标移动生物特征，合成 click 无轨迹易被判机器人。"""
+def turnstile_token(page):
+    """读 Turnstile token（input 在 light DOM，控件本身在 closed shadow DOM）"""
     try:
-        box = locator.bounding_box(timeout=timeout)
+        return page.evaluate(
+            '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
+        )
     except Exception:
-        return False
-    if not box:
-        return False
-    tx = box["x"] + box["width"] / 2 + random.uniform(-3, 3)
-    ty = box["y"] + box["height"] / 2 + random.uniform(-2, 2)
-    try:
-        # 1) 先在附近晃一下，制造移动历史
-        page.mouse.move(tx + random.uniform(-200, 200), ty + random.uniform(-120, 120), steps=10)
-        time.sleep(random.uniform(0.15, 0.35))
-        # 2) 分两段逼近目标
-        page.mouse.move(tx + random.uniform(-60, 60), ty + random.uniform(-40, 40), steps=12)
-        time.sleep(random.uniform(0.15, 0.4))
-        page.mouse.move(tx, ty, steps=18)
-        time.sleep(random.uniform(0.2, 0.5))
-        page.mouse.down()
-        time.sleep(random.uniform(0.05, 0.15))
-        page.mouse.up()
-        return True
-    except Exception as e:
-        log(f"⚠️ 真鼠标点击失败: {str(e)[:120]}")
-        return False
+        return ""
 
 
-def expand_turnstile(page):
-    """weirdhost 同款：把被盖住/压缩的验证框展开（overflow/尺寸修复），免得点不到"""
+def turnstile_box(page):
+    """取 Turnstile 控件矩形：iframe 在 closed shadow DOM，选择器进不去；
+    用 light DOM 里 cf-turnstile-response input 的可见祖先定位"""
     try:
-        page.evaluate(
+        return page.evaluate(
             """() => {
-                document.querySelectorAll('.cf-turnstile').forEach(function(c) {
-                    c.style.overflow = 'visible'; c.style.width = '300px'; c.style.height = '65px';
-                });
-                document.querySelectorAll('iframe').forEach(function(f) {
-                    if (f.src && f.src.includes('challenges.cloudflare.com')) {
-                        f.style.width = '300px'; f.style.height = '65px';
-                        f.style.visibility = 'visible'; f.style.opacity = '1';
+                const inp = document.querySelector('[name=cf-turnstile-response]');
+                if (!inp) return null;
+                let n = inp.parentElement;
+                while (n && n !== document.body) {
+                    const r = n.getBoundingClientRect();
+                    if (r.width > 50 && r.height > 20) {
+                        return {x: r.x, y: r.y, w: r.width, h: r.height};
                     }
-                });
+                    n = n.parentElement;
+                }
+                return null;
             }"""
         )
     except Exception:
-        pass
+        return None
+
+
+def click_turnstile_box(page, box):
+    """真实鼠标轨迹点控件左侧的复选框（shadow DOM 内无法用 locator 点）"""
+    tx = box["x"] + 30 + random.uniform(-2, 2)
+    ty = box["y"] + box["h"] / 2 + random.uniform(-2, 2)
+    try:
+        page.mouse.move(tx - random.uniform(120, 220), ty - random.uniform(60, 120), steps=8)
+        time.sleep(random.uniform(0.15, 0.3))
+        page.mouse.move(tx, ty, steps=15)
+        time.sleep(random.uniform(0.15, 0.3))
+        page.mouse.down()
+        time.sleep(random.uniform(0.05, 0.12))
+        page.mouse.up()
+        return True
+    except Exception as e:
+        log(f"⚠️ Turnstile 点击失败: {str(e)[:120]}")
+        return False
 
 
 def handle_cloudflare(page, timeout=90):
-    """处理 Cloudflare Turnstile 验证（复用 Hiden 骨架写法）
+    """处理 Cloudflare Turnstile 验证
     timeout：本轮最多等待秒数；轮询中请传小值（如 15），避免一轮卡死
-    策略：iframe 内 checkbox 点 → 不行就 force 点 iframe 中心；每轮都带 token 检查"""
-    iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
-    if page.locator(iframe_selector).count() == 0:
+    注意：Turnstile 控件渲染在 closed shadow DOM 里，Playwright 选择器看不到 iframe，
+    旧写法 count 永远为 0、从不点击。这里按控件矩形用坐标点复选框，再轮询 token。"""
+    box = turnstile_box(page)
+    if not box:
         return True
-    log(f"⚠️ 检测到 Cloudflare 验证（共 {page.locator(iframe_selector).count()} 个验证框）...")
+    log(f"⚠️ 检测到 Turnstile 验证框（{int(box['w'])}x{int(box['h'])}）...")
     start_time = time.time()
+    clicks = 0
+    last_click = 0.0
     while time.time() - start_time < timeout:
-        if page.locator(iframe_selector).count() == 0:
-            log("✅ Cloudflare 验证通过！")
+        if len(turnstile_token(page)) > 20:
+            log("✅ Turnstile token 已生成")
             return True
-        # token 已有则直接过
-        try:
-            token = page.evaluate(
-                '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
-            )
-            if token and len(token) > 20:
-                log("✅ Turnstile token 已生成")
-                return True
-        except Exception:
-            pass
-        # 策略1：先展开验证框，再真鼠标轨迹点击 checkbox（weirdhost 同款思路）
-        expand_turnstile(page)
-        clicked = False
-        try:
-            frame = page.frame_locator(iframe_selector)
-            checkbox = frame.locator('input[type="checkbox"]')
-            if checkbox.count() > 0 and checkbox.first.is_visible(timeout=3000):
-                checkbox.first.scroll_into_view_if_needed(timeout=3000)
-                log("🖱️ 真鼠标轨迹点击验证复选框...")
-                if human_mouse_click(page, checkbox.first):
-                    clicked = True
-                else:
-                    log("🖱️ 轨迹点击失败，改普通点击...")
-                    try:
-                        checkbox.first.click(timeout=5000)
-                    except Exception:
-                        checkbox.first.click(force=True, timeout=5000)
-                    clicked = True
-        except Exception as e:
-            log(f"⚠️ 复选框点击失败，换 force 策略: {str(e)[:120]}")
-        # 策略2：直接 force 点 iframe 中心
-        if not clicked:
-            try:
-                fr = page.locator(iframe_selector).first
-                if fr.is_visible(timeout=3000):
-                    log("🖱️ 直接点击验证框中心（force）...")
-                    fr.click(force=True, timeout=5000)
-                    clicked = True
-            except Exception as e:
-                log(f"⚠️ 验证框点击失败: {str(e)[:120]}")
-        if clicked:
-            time.sleep(5)
-            continue
-        time.sleep(2)
-    # 超时前最后看一次 token
-    try:
-        token = page.evaluate(
-            '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
-        )
-        if token and len(token) > 20:
-            log("✅ Turnstile token 已生成（超时前命中）")
-            return True
-    except Exception:
-        pass
+        box = turnstile_box(page)
+        if box:
+            if box["h"] > 200:
+                log(f"⚠️ Turnstile 升级为图像验证（{int(box['w'])}x{int(box['h'])}），脚本无法完成")
+                return False
+            # 两次点击至少隔 6s，避免在「验证中」反复打断
+            if clicks < 3 and time.time() - last_click > 6:
+                log("🖱️ 点击 Turnstile 复选框...")
+                if click_turnstile_box(page, box):
+                    clicks += 1
+                    last_click = time.time()
+        time.sleep(1)
+    if len(turnstile_token(page)) > 20:
+        log("✅ Turnstile token 已生成（超时前命中）")
+        return True
     log("❌ 验证超时。")
     return False
 
@@ -270,13 +236,7 @@ def wait_turnstile_token(page, timeout=90):
     log("⏳ 等待 Turnstile token...")
     start = time.time()
     while time.time() - start < timeout:
-        try:
-            token = page.evaluate(
-                '() => document.querySelector("[name=cf-turnstile-response]")?.value || ""'
-            )
-        except Exception:
-            token = ""
-        if token and len(token) > 20:
+        if len(turnstile_token(page)) > 20:
             log("✅ Turnstile token 已生成")
             return True
         time.sleep(1)

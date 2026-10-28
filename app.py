@@ -659,7 +659,8 @@ def main():
             )
             context = browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                # 不要覆盖 UA：Playwright 只改 UA 字符串，UA-CH 仍报真实内核版本，
+                # 两者不一致会被 Turnstile 判为机器人（300010），盾直接不给 token
                 proxy={"server": PROXY_SERVER} if IS_PROXY else None
             )
             page = context.new_page()

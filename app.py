@@ -33,8 +33,8 @@ if not (TG_BOT_TOKEN and TG_CHAT_ID) and ',' in _TG_BOT:
     TG_CHAT_ID, TG_BOT_TOKEN = _a.strip(), _b.strip()
 
 BASE_URL = "https://panel.orihost.com"
-SERVER_SHORT_ID = "8651e616"  # 地址栏 /server/ 后面那段
-SERVER_UUID = "8651e616-52e2-46bb-8cbf-74159abb9815"  # 抓包实测：API 要用全量 UUID
+SERVER_SHORT_ID = "a6695785"  # 地址栏 /server/ 后面那段
+SERVER_UUID = "a6695785-5b4b-4e49-b98f-b4f2eace7851"  # 抓包实测：API 要用全量 UUID
 SERVER_URL = f"{BASE_URL}/server/{SERVER_SHORT_ID}"
 API_COOLDOWN = f"{BASE_URL}/api/client/servers/{SERVER_UUID}/renew/cooldown"
 API_BEGIN = f"{BASE_URL}/api/client/servers/{SERVER_UUID}/renew/begin"
